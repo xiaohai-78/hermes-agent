@@ -1,0 +1,750 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>LLM Trace Viewer</title>
+<style>
+  :root {
+    --bg: #0f1115;
+    --bg-1: #161922;
+    --bg-2: #1d2230;
+    --bg-3: #262c3e;
+    --border: #2b3142;
+    --text: #e7eaf3;
+    --text-dim: #9aa3b8;
+    --text-mute: #6b7286;
+    --accent: #7c9cff;
+    --accent-dim: #4f6ec9;
+    --main: #4ea1ff;
+    --aux: #b990ff;
+    --error: #ff6b6b;
+    --ok: #5fcf80;
+    --user: #4ea1ff;
+    --assistant: #b990ff;
+    --system: #9aa3b8;
+    --tool: #f0a657;
+    --shadow: 0 2px 6px rgba(0,0,0,0.4);
+    --mono: ui-monospace, SFMono-Regular, "JetBrains Mono", Menlo, monospace;
+  }
+  @media (prefers-color-scheme: light) {
+    :root {
+      --bg: #f7f8fa;
+      --bg-1: #ffffff;
+      --bg-2: #eef0f5;
+      --bg-3: #e3e6ee;
+      --border: #d4d8e1;
+      --text: #1f2333;
+      --text-dim: #5a6275;
+      --text-mute: #8990a3;
+      --shadow: 0 2px 6px rgba(0,0,0,0.06);
+    }
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; padding: 0; height: 100%; overflow: hidden; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC",
+      "Hiragino Sans GB", "Microsoft YaHei", sans-serif;
+    color: var(--text);
+    background: var(--bg);
+    font-size: 14px;
+  }
+  button { font: inherit; color: inherit; cursor: pointer; }
+
+  /* 顶栏 */
+  header.bar {
+    display: flex; align-items: center; gap: 12px;
+    padding: 8px 16px; height: 44px;
+    background: var(--bg-1);
+    border-bottom: 1px solid var(--border);
+  }
+  header.bar .title { font-weight: 600; font-size: 15px; letter-spacing: 0.3px; }
+  header.bar .dir {
+    font-family: var(--mono); font-size: 12px; color: var(--text-dim);
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+    flex: 1;
+  }
+  header.bar .actions { display: flex; gap: 8px; }
+  header.bar button.ghost {
+    background: transparent; border: 1px solid var(--border);
+    color: var(--text-dim); border-radius: 6px; padding: 4px 10px; font-size: 12px;
+  }
+  header.bar button.ghost:hover { color: var(--text); border-color: var(--accent); }
+
+  /* 三栏 */
+  main.layout {
+    display: grid;
+    grid-template-columns: 280px 320px 1fr;
+    height: calc(100vh - 44px);
+  }
+  .col { overflow-y: auto; border-right: 1px solid var(--border); background: var(--bg-1); }
+  .col:last-child { border-right: none; background: var(--bg); }
+  .col h2 {
+    margin: 0; padding: 8px 12px; font-size: 11px;
+    text-transform: uppercase; letter-spacing: 0.8px;
+    color: var(--text-mute); background: var(--bg-2);
+    position: sticky; top: 0; z-index: 1;
+    border-bottom: 1px solid var(--border);
+    display: flex; justify-content: space-between; align-items: center;
+  }
+
+  /* Session 卡片 */
+  .session {
+    padding: 10px 12px; border-bottom: 1px solid var(--border); cursor: pointer;
+    transition: background .12s;
+  }
+  .session:hover { background: var(--bg-2); }
+  .session.active { background: var(--bg-3); border-left: 3px solid var(--accent); padding-left: 9px; }
+  .session .sid {
+    font-family: var(--mono); font-size: 12px; color: var(--text);
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  }
+  .session .preview {
+    margin-top: 4px; font-size: 12px; color: var(--text-dim);
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  }
+  .session .stats {
+    margin-top: 6px; display: flex; gap: 8px;
+    font-size: 11px; color: var(--text-mute);
+  }
+  .session .stats .pill {
+    padding: 1px 6px; border-radius: 10px; background: var(--bg-2);
+  }
+
+  /* turn / call 列表 */
+  .turn { border-bottom: 1px solid var(--border); }
+  .turn-head {
+    padding: 8px 12px; font-size: 12px; color: var(--text-dim);
+    background: var(--bg-2); display: flex; gap: 6px; align-items: center;
+  }
+  .turn-head .index { font-family: var(--mono); color: var(--text); }
+  .turn-head .preview {
+    flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+    color: var(--text-mute);
+  }
+  .call {
+    padding: 8px 12px 8px 24px; cursor: pointer;
+    border-left: 3px solid transparent; transition: background .12s;
+    display: flex; flex-direction: column; gap: 4px;
+  }
+  .call:hover { background: var(--bg-2); }
+  .call.active { background: var(--bg-3); border-left-color: var(--accent); }
+  .call .row1 { display: flex; gap: 6px; align-items: center; }
+  .call .tag {
+    font-size: 10px; padding: 1px 6px; border-radius: 3px;
+    font-family: var(--mono); flex-shrink: 0;
+  }
+  .call .tag.main { background: rgba(78,161,255,0.15); color: var(--main); }
+  .call .tag.aux  { background: rgba(185,144,255,0.15); color: var(--aux); }
+  .call .tag.error { background: rgba(255,107,107,0.18); color: var(--error); margin-left: auto; }
+  .call .tag.stream { background: var(--bg-2); color: var(--text-mute); }
+  .call .model {
+    font-family: var(--mono); font-size: 12px; color: var(--text);
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  }
+  .call .row2 { font-size: 11px; color: var(--text-mute); display: flex; gap: 10px; }
+  .call .row2 span:before { content: ""; }
+
+  .empty {
+    padding: 24px 16px; color: var(--text-mute); text-align: center;
+    font-size: 13px;
+  }
+
+  /* 详情区 */
+  .detail-head {
+    padding: 14px 18px; background: var(--bg-1);
+    border-bottom: 1px solid var(--border);
+  }
+  .detail-head .title-row { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+  .detail-head .title-row .model {
+    font-family: var(--mono); font-size: 14px; font-weight: 600;
+  }
+  .detail-head .meta {
+    margin-top: 8px; display: flex; flex-wrap: wrap; gap: 6px 16px;
+    font-size: 12px; color: var(--text-dim);
+  }
+  .detail-head .meta b { font-weight: 500; color: var(--text); margin-right: 4px; }
+  .detail-head .base-url { font-family: var(--mono); font-size: 11px; color: var(--text-mute); margin-top: 4px; word-break: break-all; }
+
+  .tabs { display: flex; gap: 0; border-bottom: 1px solid var(--border); background: var(--bg-1); padding: 0 12px; }
+  .tabs button {
+    background: transparent; border: none; padding: 10px 14px; color: var(--text-dim);
+    font-size: 13px; border-bottom: 2px solid transparent; cursor: pointer;
+    transition: color .12s, border-color .12s;
+  }
+  .tabs button:hover { color: var(--text); }
+  .tabs button.active { color: var(--accent); border-bottom-color: var(--accent); }
+
+  .tab-body { padding: 18px; overflow-y: auto; height: calc(100% - 130px); }
+
+  /* Messages 气泡 */
+  .msg { margin-bottom: 14px; padding: 12px 14px; border-radius: 8px; background: var(--bg-1);
+         border-left: 3px solid var(--border); }
+  .msg.system { border-left-color: var(--system); }
+  .msg.user { border-left-color: var(--user); }
+  .msg.assistant { border-left-color: var(--assistant); }
+  .msg.tool { border-left-color: var(--tool); }
+  .msg .head {
+    font-size: 11px; text-transform: uppercase; letter-spacing: 0.8px;
+    color: var(--text-mute); margin-bottom: 6px; font-family: var(--mono);
+    display: flex; gap: 10px; align-items: center;
+  }
+  .msg .head .role { color: var(--text); font-weight: 600; }
+  .msg .head .meta { color: var(--text-mute); font-size: 10px; }
+  .msg .body {
+    font-family: var(--mono); font-size: 12.5px; line-height: 1.55;
+    white-space: pre-wrap; word-break: break-word; color: var(--text);
+  }
+  .msg .body.collapsed { max-height: 200px; overflow: hidden; position: relative; }
+  .msg .body.collapsed:after {
+    content: ""; position: absolute; bottom: 0; left: 0; right: 0; height: 60px;
+    background: linear-gradient(transparent, var(--bg-1));
+    pointer-events: none;
+  }
+  .msg .toggle {
+    margin-top: 6px; background: transparent; border: none; color: var(--accent);
+    font-size: 11px; padding: 0; cursor: pointer;
+  }
+
+  /* Tool calls 渲染 */
+  .tool-call {
+    margin-top: 8px; padding: 8px 10px; background: var(--bg-2);
+    border-radius: 6px; font-family: var(--mono); font-size: 12px;
+  }
+  .tool-call .name { color: var(--tool); font-weight: 600; }
+
+  /* Response 两栏 */
+  .response-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+  @media (max-width: 1100px) { .response-grid { grid-template-columns: 1fr; } }
+  .response-pane {
+    background: var(--bg-1); border-left: 3px solid var(--border);
+    border-radius: 6px; padding: 12px 14px;
+  }
+  .response-pane.reasoning { border-left-color: #f0a657; }
+  .response-pane.content { border-left-color: var(--ok); }
+  .response-pane h3 {
+    margin: 0 0 8px 0; font-size: 11px; text-transform: uppercase;
+    letter-spacing: 0.8px; color: var(--text-mute); font-family: var(--mono);
+  }
+  .response-pane pre {
+    margin: 0; font-family: var(--mono); font-size: 12.5px; line-height: 1.55;
+    white-space: pre-wrap; word-break: break-word; color: var(--text);
+  }
+
+  /* Chunks 时间线 */
+  .chunks-stats {
+    display: flex; gap: 16px; margin-bottom: 14px; padding: 10px 12px;
+    background: var(--bg-1); border-radius: 6px; font-size: 12px;
+  }
+  .chunks-stats div b { font-family: var(--mono); margin-right: 4px; }
+  .chunks-table {
+    width: 100%; border-collapse: collapse; font-family: var(--mono); font-size: 12px;
+  }
+  .chunks-table th, .chunks-table td {
+    border-bottom: 1px solid var(--border);
+    padding: 6px 8px; text-align: left; vertical-align: top;
+  }
+  .chunks-table th {
+    background: var(--bg-2); color: var(--text-mute); font-weight: 500;
+    text-transform: uppercase; font-size: 10px; letter-spacing: 0.6px;
+    position: sticky; top: 0;
+  }
+  .chunks-table tr:hover td { background: var(--bg-1); }
+  .chunks-table .ts { color: var(--text-mute); white-space: nowrap; }
+  .chunks-table .delta-c { color: var(--ok); }
+  .chunks-table .delta-r { color: #f0a657; font-style: italic; }
+  .chunks-table .empty-cell { color: var(--text-mute); }
+  .chunks-table .meta-cell { color: var(--text-mute); font-size: 11px; }
+
+  /* Raw */
+  pre.raw {
+    margin: 0; padding: 14px; background: var(--bg-1); border-radius: 6px;
+    font-family: var(--mono); font-size: 12px; line-height: 1.5;
+    white-space: pre-wrap; word-break: break-word;
+    border: 1px solid var(--border);
+  }
+
+  .placeholder {
+    display: flex; align-items: center; justify-content: center;
+    height: 100%; color: var(--text-mute); flex-direction: column;
+    gap: 8px; padding: 30px;
+  }
+  .placeholder .hint { font-size: 12px; }
+</style>
+</head>
+<body>
+
+<header class="bar">
+  <div class="title">🔍 LLM Trace Viewer</div>
+  <div class="dir" id="dir-path">—</div>
+  <div class="actions">
+    <button class="ghost" id="btn-refresh">⟳ Refresh</button>
+  </div>
+</header>
+
+<main class="layout">
+  <section class="col" id="col-sessions">
+    <h2><span>Sessions</span><span id="sessions-count" class="pill"></span></h2>
+    <div id="sessions-list"></div>
+  </section>
+
+  <section class="col" id="col-calls">
+    <h2><span>Turns / Calls</span></h2>
+    <div id="calls-list">
+      <div class="empty">从左侧选一个 session</div>
+    </div>
+  </section>
+
+  <section class="col" id="col-detail">
+    <div id="detail-host">
+      <div class="placeholder">
+        <div>选一个 call 查看详情</div>
+        <div class="hint">可以同时打开多个 trace dir：viewer.py --dir &lt;abs&gt;</div>
+      </div>
+    </div>
+  </section>
+</main>
+
+<script>
+const $ = (id) => document.getElementById(id);
+
+let state = {
+  sessions: [],
+  trace_dir: '',
+  selectedSession: null,
+  selectedCall: null,
+  currentDetail: null,
+  activeTab: 'messages',
+};
+
+// ---- helpers ----
+function fmtTs(ts) {
+  if (!ts) return '—';
+  const d = new Date(ts * 1000);
+  const pad = (n) => String(n).padStart(2, '0');
+  return `${d.getFullYear()}-${pad(d.getMonth()+1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`;
+}
+function fmtMs(ms) {
+  if (ms == null) return '—';
+  if (ms < 1000) return ms + 'ms';
+  return (ms / 1000).toFixed(2) + 's';
+}
+function escapeHtml(s) {
+  if (s == null) return '';
+  return String(s)
+    .replaceAll('&', '&amp;').replaceAll('<', '&lt;').replaceAll('>', '&gt;')
+    .replaceAll('"', '&quot;');
+}
+function shortBaseUrl(u) {
+  if (!u) return '';
+  try {
+    const p = new URL(u);
+    return p.host + (p.pathname.length > 1 ? p.pathname : '');
+  } catch { return u; }
+}
+function callKindClass(k) {
+  if (!k) return 'aux';
+  return k === 'main' ? 'main' : 'aux';
+}
+
+// ---- API ----
+async function apiGet(path) {
+  const r = await fetch(path);
+  if (!r.ok) throw new Error(`${r.status} ${path}`);
+  return r.json();
+}
+
+// ---- 渲染：sessions ----
+async function loadSessions() {
+  const data = await apiGet('/api/sessions');
+  state.sessions = data.sessions;
+  state.trace_dir = data.trace_dir;
+  $('dir-path').textContent = data.trace_dir;
+  $('dir-path').title = data.trace_dir;
+  $('sessions-count').textContent = data.sessions.length;
+  renderSessions();
+}
+
+function renderSessions() {
+  const host = $('sessions-list');
+  if (!state.sessions.length) {
+    host.innerHTML = `<div class="empty">还没有 trace。<br><br>启用插件后<br>发起一次对话试试。</div>`;
+    return;
+  }
+  host.innerHTML = state.sessions.map(s => `
+    <div class="session ${state.selectedSession === s.id ? 'active' : ''}" data-sid="${escapeHtml(s.id)}">
+      <div class="sid">${escapeHtml(s.id)}</div>
+      <div class="preview">${escapeHtml(s.preview || '(无 user message)')}</div>
+      <div class="stats">
+        <span class="pill">${s.turn_count} turns</span>
+        <span class="pill">${s.main_call_count} main</span>
+        <span class="pill">${s.aux_count} aux</span>
+        <span style="margin-left:auto;color:var(--text-mute);">${fmtTs(s.started_at)}</span>
+      </div>
+    </div>
+  `).join('');
+  host.querySelectorAll('.session').forEach(el => {
+    el.addEventListener('click', () => selectSession(el.dataset.sid));
+  });
+}
+
+// ---- 渲染：calls ----
+async function selectSession(sid) {
+  state.selectedSession = sid;
+  state.selectedCall = null;
+  state.currentDetail = null;
+  renderSessions();
+  $('calls-list').innerHTML = `<div class="empty">加载中…</div>`;
+  $('detail-host').innerHTML = `<div class="placeholder"><div>选一个 call 查看详情</div></div>`;
+  try {
+    const data = await apiGet('/api/session/' + encodeURIComponent(sid));
+    renderCalls(data);
+  } catch (e) {
+    $('calls-list').innerHTML = `<div class="empty">加载失败：${escapeHtml(e.message)}</div>`;
+  }
+}
+
+function renderCalls(session) {
+  const host = $('calls-list');
+  const parts = [];
+
+  // turns
+  for (const t of session.turns) {
+    const meta = t.meta || {};
+    parts.push(`<div class="turn">
+      <div class="turn-head">
+        <span class="index">${escapeHtml(t.id)}</span>
+        <span class="preview">${escapeHtml(meta.user_message_preview || '')}</span>
+      </div>
+      ${t.calls.map(c => renderCallItem(c, t.id)).join('') || '<div class="empty" style="padding:8px;">本 turn 暂无 call</div>'}
+    </div>`);
+  }
+
+  // aux
+  if (session.aux_calls && session.aux_calls.length) {
+    parts.push(`<div class="turn">
+      <div class="turn-head"><span class="index">aux</span><span class="preview">${session.aux_calls.length} 次辅助调用</span></div>
+      ${session.aux_calls.map(c => renderCallItem(c, 'aux')).join('')}
+    </div>`);
+  }
+
+  if (!parts.length) {
+    host.innerHTML = `<div class="empty">本 session 没有 call</div>`;
+    return;
+  }
+  host.innerHTML = parts.join('');
+  host.querySelectorAll('.call').forEach(el => {
+    el.addEventListener('click', () => selectCall(session.id, el.dataset.parent, el.dataset.cid));
+  });
+}
+
+function renderCallItem(call, parent) {
+  const ck = call.call_kind || '?';
+  const cls = callKindClass(ck);
+  const isActive = state.selectedCall &&
+    state.selectedCall.parent === parent &&
+    state.selectedCall.id === call.id;
+  return `<div class="call ${isActive ? 'active' : ''}" data-cid="${escapeHtml(call.id)}" data-parent="${escapeHtml(parent)}">
+    <div class="row1">
+      <span class="tag ${cls}">${escapeHtml(ck)}</span>
+      ${call.streaming ? '<span class="tag stream">stream</span>' : ''}
+      ${call.has_error ? '<span class="tag error">error</span>' : ''}
+    </div>
+    <div class="model">${escapeHtml(call.model || '?')}</div>
+    <div class="row2">
+      <span>⏱ ${fmtMs(call.elapsed_ms)}</span>
+      ${call.chunk_count != null ? `<span>● ${call.chunk_count} chunks</span>` : ''}
+    </div>
+  </div>`;
+}
+
+// ---- 渲染：detail ----
+async function selectCall(sid, parent, cid) {
+  state.selectedCall = { sid, parent, id: cid };
+  // 重新渲染 calls 让选中态生效
+  document.querySelectorAll('.call').forEach(el => {
+    el.classList.toggle('active',
+      el.dataset.cid === cid && el.dataset.parent === parent);
+  });
+  $('detail-host').innerHTML = `<div class="placeholder">加载中…</div>`;
+  try {
+    const data = await apiGet(`/api/call/${encodeURIComponent(sid)}/${encodeURIComponent(parent)}/${encodeURIComponent(cid)}`);
+    state.currentDetail = data;
+    renderDetail();
+  } catch (e) {
+    $('detail-host').innerHTML = `<div class="placeholder">加载失败：${escapeHtml(e.message)}</div>`;
+  }
+}
+
+function renderDetail() {
+  const d = state.currentDetail;
+  if (!d) return;
+  const req = d.request || {};
+  const resp = d.response || {};
+  const usage = extractUsage(d);
+
+  const html = `
+    <div class="detail-head">
+      <div class="title-row">
+        <span class="tag ${callKindClass(req.call_kind)}" style="font-family:var(--mono);font-size:11px;padding:2px 8px;border-radius:4px;">
+          ${escapeHtml(req.call_kind || '?')}
+        </span>
+        <span class="model">${escapeHtml(req.model || '?')}</span>
+        ${req.streaming ? '<span class="tag stream" style="font-family:var(--mono);font-size:11px;padding:2px 8px;border-radius:4px;">streaming</span>' : ''}
+        ${resp.error ? '<span class="tag error" style="font-family:var(--mono);font-size:11px;padding:2px 8px;border-radius:4px;">error</span>' : ''}
+      </div>
+      <div class="meta">
+        <span><b>耗时</b>${fmtMs(resp.elapsed_ms)}</span>
+        ${resp.chunk_count != null ? `<span><b>chunks</b>${resp.chunk_count}</span>` : ''}
+        ${usage.prompt_tokens != null ? `<span><b>prompt</b>${usage.prompt_tokens}</span>` : ''}
+        ${usage.completion_tokens != null ? `<span><b>completion</b>${usage.completion_tokens}</span>` : ''}
+        ${usage.reasoning_tokens != null ? `<span><b>reasoning</b>${usage.reasoning_tokens}</span>` : ''}
+        ${usage.cached_tokens != null ? `<span><b>cached</b>${usage.cached_tokens}${usage.cache_hit_pct != null ? ` (${usage.cache_hit_pct}%)` : ''}</span>` : ''}
+        <span><b>session</b><code style="font-family:var(--mono);">${escapeHtml(req.session_id || '')}</code></span>
+      </div>
+      <div class="base-url">→ ${escapeHtml(shortBaseUrl(req.base_url))}</div>
+    </div>
+    <div class="tabs">
+      <button data-tab="messages" class="${state.activeTab === 'messages' ? 'active' : ''}">Messages (${(req.kwargs?.messages || []).length})</button>
+      <button data-tab="response" class="${state.activeTab === 'response' ? 'active' : ''}">Response</button>
+      <button data-tab="chunks"   class="${state.activeTab === 'chunks' ? 'active' : ''}">Chunks (${(d.chunks || []).length})</button>
+      <button data-tab="raw"      class="${state.activeTab === 'raw' ? 'active' : ''}">Raw</button>
+    </div>
+    <div class="tab-body" id="tab-body"></div>
+  `;
+  $('detail-host').innerHTML = html;
+  $('detail-host').querySelectorAll('.tabs button').forEach(b => {
+    b.addEventListener('click', () => {
+      state.activeTab = b.dataset.tab;
+      $('detail-host').querySelectorAll('.tabs button').forEach(x => x.classList.toggle('active', x.dataset.tab === state.activeTab));
+      renderTab();
+    });
+  });
+  renderTab();
+}
+
+function renderTab() {
+  const host = $('tab-body');
+  if (!host) return;
+  const d = state.currentDetail;
+  if (state.activeTab === 'messages') host.innerHTML = renderMessages(d);
+  else if (state.activeTab === 'response') host.innerHTML = renderResponse(d);
+  else if (state.activeTab === 'chunks') host.innerHTML = renderChunks(d);
+  else if (state.activeTab === 'raw') host.innerHTML = renderRaw(d);
+  // 折叠交互
+  host.querySelectorAll('.toggle').forEach(b => {
+    b.addEventListener('click', () => {
+      const body = b.previousElementSibling;
+      const collapsed = body.classList.toggle('collapsed');
+      b.textContent = collapsed ? '展开' : '收起';
+    });
+  });
+}
+
+// ---- Messages ----
+function renderMessages(d) {
+  const messages = (d.request?.kwargs?.messages) || [];
+  if (!messages.length) return `<div class="empty">无 messages</div>`;
+  return messages.map((m, i) => {
+    const role = m.role || '?';
+    const cls = ['system', 'user', 'assistant', 'tool'].includes(role) ? role : 'system';
+    let content = '';
+    if (typeof m.content === 'string') {
+      content = m.content;
+    } else if (Array.isArray(m.content)) {
+      content = m.content.map(p => typeof p === 'string' ? p : (p.text || JSON.stringify(p))).join('\n');
+    } else if (m.content != null) {
+      content = JSON.stringify(m.content, null, 2);
+    }
+    const long = content && content.length > 800;
+    const safe = escapeHtml(content || '(空)');
+    let toolCallsBlock = '';
+    if (m.tool_calls && m.tool_calls.length) {
+      toolCallsBlock = m.tool_calls.map(tc => {
+        const fn = tc.function || {};
+        let argsPretty = fn.arguments || '';
+        try { argsPretty = JSON.stringify(JSON.parse(argsPretty), null, 2); } catch {}
+        return `<div class="tool-call"><div class="name">→ ${escapeHtml(fn.name || '?')}</div><pre style="margin:6px 0 0 0;">${escapeHtml(argsPretty)}</pre></div>`;
+      }).join('');
+    }
+    const meta = m.tool_call_id ? `tool_call_id=${m.tool_call_id}` : '';
+    return `<div class="msg ${cls}">
+      <div class="head"><span class="role">${escapeHtml(role)}</span>${meta ? `<span class="meta">${escapeHtml(meta)}</span>` : ''}<span class="meta">#${i}</span></div>
+      <div class="body ${long ? 'collapsed' : ''}">${safe}</div>
+      ${long ? '<button class="toggle">展开</button>' : ''}
+      ${toolCallsBlock}
+    </div>`;
+  }).join('');
+}
+
+// ---- Response ----
+function renderResponse(d) {
+  if (d.response?.error) {
+    return `<div class="msg" style="border-left-color:var(--error);">
+      <div class="head"><span class="role">error</span><span class="meta">${escapeHtml(d.response.error.type || '')}</span></div>
+      <div class="body">${escapeHtml(d.response.error.message || '')}</div>
+    </div>`;
+  }
+  if (d.request?.streaming) {
+    const { content, reasoning, finishReason } = reconstructStream(d.chunks || []);
+    return `<div class="response-grid">
+      <div class="response-pane reasoning">
+        <h3>Reasoning</h3>
+        <pre>${escapeHtml(reasoning || '(无)')}</pre>
+      </div>
+      <div class="response-pane content">
+        <h3>Content${finishReason ? ` <span style="color:var(--text-mute);font-weight:normal;">· finish=${escapeHtml(finishReason)}</span>` : ''}</h3>
+        <pre>${escapeHtml(content || '(无)')}</pre>
+      </div>
+    </div>`;
+  }
+  // 非流式
+  const resp = d.response?.response;
+  if (!resp) return `<div class="empty">无响应数据</div>`;
+  const choice = resp.choices?.[0]?.message || {};
+  const content = choice.content || '';
+  const reasoning = choice.reasoning_content || choice.reasoning || '';
+  const tcs = choice.tool_calls || [];
+  let tcBlock = '';
+  if (tcs.length) {
+    tcBlock = tcs.map(tc => {
+      const fn = tc.function || {};
+      let args = fn.arguments || '';
+      try { args = JSON.stringify(JSON.parse(args), null, 2); } catch {}
+      return `<div class="tool-call"><div class="name">→ ${escapeHtml(fn.name || '?')}</div><pre style="margin:6px 0 0 0;">${escapeHtml(args)}</pre></div>`;
+    }).join('');
+  }
+  return `<div class="response-grid">
+    <div class="response-pane reasoning">
+      <h3>Reasoning</h3>
+      <pre>${escapeHtml(reasoning || '(无)')}</pre>
+    </div>
+    <div class="response-pane content">
+      <h3>Content</h3>
+      <pre>${escapeHtml(content || '(无)')}</pre>
+      ${tcBlock}
+    </div>
+  </div>`;
+}
+
+function reconstructStream(chunks) {
+  let content = '';
+  let reasoning = '';
+  let finishReason = null;
+  for (const ch of chunks) {
+    const c = ch.chunk;
+    if (!c) continue;
+    const choice = c.choices?.[0];
+    if (!choice) continue;
+    const delta = choice.delta || {};
+    if (typeof delta.content === 'string') content += delta.content;
+    if (typeof delta.reasoning_content === 'string') reasoning += delta.reasoning_content;
+    if (typeof delta.reasoning === 'string') reasoning += delta.reasoning;
+    if (choice.finish_reason) finishReason = choice.finish_reason;
+  }
+  return { content, reasoning, finishReason };
+}
+
+// ---- Chunks ----
+function renderChunks(d) {
+  const chunks = d.chunks || [];
+  if (!chunks.length) return `<div class="empty">无 chunks（非流式调用？）</div>`;
+  const t0 = chunks[0]?.ts || 0;
+  const lastIdx = chunks.length - 1;
+  const tEnd = chunks[lastIdx]?.ts || t0;
+  const totalSec = tEnd - t0;
+
+  // 用 chunks 第一个有内容的 chunk 推断首 token 延迟
+  let firstContentMs = null;
+  for (const ch of chunks) {
+    const delta = ch.chunk?.choices?.[0]?.delta || {};
+    if ((delta.content && delta.content.length) || (delta.reasoning_content && delta.reasoning_content.length)) {
+      firstContentMs = Math.round((ch.ts - t0) * 1000);
+      break;
+    }
+  }
+
+  const stats = `<div class="chunks-stats">
+    <div><b>chunks</b>${chunks.length}</div>
+    <div><b>跨度</b>${totalSec.toFixed(2)}s</div>
+    ${firstContentMs != null ? `<div><b>首 token</b>${firstContentMs}ms</div>` : ''}
+  </div>`;
+
+  const rows = chunks.map(ch => {
+    const ms = Math.round((ch.ts - t0) * 1000);
+    const c = ch.chunk || {};
+    const choice = c.choices?.[0] || {};
+    const delta = choice.delta || {};
+    const cells = [];
+    if (delta.content) cells.push(`<div class="delta-c">${escapeHtml(delta.content)}</div>`);
+    if (delta.reasoning_content) cells.push(`<div class="delta-r">${escapeHtml(delta.reasoning_content)}</div>`);
+    if (delta.role) cells.push(`<div class="meta-cell">role=${escapeHtml(delta.role)}</div>`);
+    if (delta.tool_calls) cells.push(`<div class="meta-cell">tool_calls (${delta.tool_calls.length})</div>`);
+    if (choice.finish_reason) cells.push(`<div class="meta-cell">finish=${escapeHtml(choice.finish_reason)}</div>`);
+    if (c.usage) {
+      const u = c.usage;
+      cells.push(`<div class="meta-cell">usage: prompt=${u.prompt_tokens} completion=${u.completion_tokens}${u.completion_tokens_details?.reasoning_tokens != null ? ` reasoning=${u.completion_tokens_details.reasoning_tokens}` : ''}</div>`);
+    }
+    if (!cells.length) cells.push(`<div class="empty-cell">(空 delta)</div>`);
+    return `<tr>
+      <td class="ts">#${ch.idx}</td>
+      <td class="ts">+${ms}ms</td>
+      <td>${cells.join('')}</td>
+    </tr>`;
+  }).join('');
+
+  return stats + `<table class="chunks-table">
+    <thead><tr><th>idx</th><th>Δt</th><th>delta</th></tr></thead>
+    <tbody>${rows}</tbody>
+  </table>`;
+}
+
+// ---- Raw ----
+function renderRaw(d) {
+  return `
+    <h3 style="font-size:12px;color:var(--text-mute);margin:0 0 8px 0;font-family:var(--mono);">request.json</h3>
+    <pre class="raw">${escapeHtml(JSON.stringify(d.request, null, 2))}</pre>
+    <h3 style="font-size:12px;color:var(--text-mute);margin:18px 0 8px 0;font-family:var(--mono);">response.json</h3>
+    <pre class="raw">${escapeHtml(JSON.stringify(d.response, null, 2))}</pre>
+    ${d.chunks?.length ? `<h3 style="font-size:12px;color:var(--text-mute);margin:18px 0 8px 0;font-family:var(--mono);">chunks.ndjson (${d.chunks.length})</h3>
+    <pre class="raw">${escapeHtml(d.chunks.map(c => JSON.stringify(c)).join('\n'))}</pre>` : ''}
+  `;
+}
+
+// ---- usage 抽取 ----
+function extractUsage(d) {
+  const out = {};
+  // 非流式
+  let usage = d.response?.response?.usage;
+  // 流式：从最后一个有 usage 的 chunk 找
+  if (!usage && d.chunks?.length) {
+    for (let i = d.chunks.length - 1; i >= 0; i--) {
+      if (d.chunks[i].chunk?.usage) { usage = d.chunks[i].chunk.usage; break; }
+    }
+  }
+  if (!usage) return out;
+  out.prompt_tokens = usage.prompt_tokens;
+  out.completion_tokens = usage.completion_tokens;
+  out.reasoning_tokens = usage.completion_tokens_details?.reasoning_tokens;
+  out.cached_tokens = usage.prompt_tokens_details?.cached_tokens ?? usage.prompt_cache_hit_tokens;
+  if (out.cached_tokens != null && out.prompt_tokens) {
+    out.cache_hit_pct = Math.round(out.cached_tokens / out.prompt_tokens * 100);
+  }
+  return out;
+}
+
+// ---- 启动 ----
+$('btn-refresh').addEventListener('click', loadSessions);
+loadSessions().catch(e => {
+  $('sessions-list').innerHTML = `<div class="empty">无法连接后端：${escapeHtml(e.message)}</div>`;
+});
+
+// 简单快捷键
+window.addEventListener('keydown', (e) => {
+  if (e.key === 'r' && !e.metaKey && !e.ctrlKey && document.activeElement === document.body) {
+    loadSessions();
+  }
+});
+</script>
+</body>
+</html>

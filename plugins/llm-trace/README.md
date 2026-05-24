@@ -74,6 +74,37 @@ $HERMES_HOME/llm-traces/
 - **代理类透明转发**：流式包装不修改 SDK 的 `Stream` 类，而是返回一个代理对象，所有未拦截的属性（`response`、`__enter__` 等）通过 `__getattr__` 转发到原 stream，避免破坏 Hermes 内部对 stream 的诊断访问（如 `stream.response` 抓 OpenRouter 缓存头）。
 - **请求脱敏**：`request.json` 里只记 `kwargs`，不写 `api_key` / `Authorization`（这些都不在 kwargs 里，但保险起见在 recorder 做了显式过滤）。
 
+## 可视化 viewer
+
+插件自带一个本地 viewer，零依赖（纯 Python stdlib + 单文件 HTML），不需要再用 `python -m http.server` 看裸 JSON。
+
+```bash
+# 任何目录下都能跑（不依赖 cwd）
+python /Users/<you>/PycharmProjects/hermes-agent/plugins/llm-trace/viewer.py
+
+# 自定义端口 / 不自动打开浏览器 / 看别的 trace 目录
+python plugins/llm-trace/viewer.py --port 9000 --no-open --dir /tmp/foo
+```
+
+启动后浏览器自动打开 `http://127.0.0.1:8765/`，三栏布局：
+
+| 栏 | 内容 |
+|---|---|
+| 左 (Sessions) | 按时间倒序的 session 卡片，显示 turn / main / aux 数 + user preview |
+| 中 (Turns / Calls) | 选中 session 后展开，每个 turn 下列出 main 调用，最后是 aux 区块。tag 标识 `main` / `aux:<task>` / streaming / error |
+| 右 (Detail) | 顶部 header 显示 model / call_kind / 耗时 / token usage（含 cache hit %）；4 个 tab： |
+
+**4 个 tab：**
+
+- **Messages**：把 `request.kwargs.messages` 渲染成对话气泡（system/user/assistant/tool 配色 + 长内容折叠 + tool_calls 展开）
+- **Response**：自动从 chunks 里重建 `content` 与 `reasoning_content` 两栏（流式调用直接看输出，不用自己拼 NDJSON）
+- **Chunks**：时间线表格——idx、相对启动时间 Δt（ms）、delta 内容；附统计行（chunk 数、跨度、首 token 延迟）
+- **Raw**：原始 `request.json` / `response.json` / `chunks.ndjson`
+
+> 提示：viewer 只读 trace 目录的文件，**不会修改任何数据**。可以一边对话一边点 Refresh 看刚落盘的 trace。
+
+---
+
 ## 关闭/卸载
 
 - 临时关：`HERMES_LLM_TRACE=0 hermes` → 插件加载但所有 `create()` 调用走原始路径。
