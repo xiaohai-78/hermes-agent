@@ -96,7 +96,9 @@ def list_sessions() -> list[dict]:
         if not d.is_dir():
             continue
         out.append(_summarize_session(d))
-    out.sort(key=lambda x: x.get("started_at") or "", reverse=True)
+    # 最近的 session 排最上面；started_at 缺失时退化成按 id 倒序
+    # （session id 自带时间戳前缀 ``YYYYMMDD_HHMMSS_xxx``，字典序即时间序）。
+    out.sort(key=lambda x: (x.get("started_at") or 0, x.get("id") or ""), reverse=True)
     return out
 
 
@@ -110,16 +112,18 @@ def _summarize_session(session_dir: Path) -> dict:
         aux_count = sum(
             1 for d in aux_dir.iterdir() if d.is_dir() and d.name.startswith("call-")
         )
+    # ``turns`` 已按字典序升序：turn-0001 是最早的，最后一个是最近的。
+    # session 列表卡片显示"最近 user message"作为预览（更直观）。
     started_at = None
-    last_user_message = ""
+    latest_user_message = ""
     for t in turns:
         meta = _read_json(t / "_turn.json")
         if not meta:
             continue
         if started_at is None:
-            started_at = meta.get("started_at")
+            started_at = meta.get("started_at")  # 最早 turn 的 started_at == session 开始时间
         if meta.get("user_message_preview"):
-            last_user_message = meta["user_message_preview"]
+            latest_user_message = meta["user_message_preview"]  # 升序遍历，最终值即最新
     main_call_count = 0
     for t in turns:
         for c in t.iterdir():
@@ -131,7 +135,7 @@ def _summarize_session(session_dir: Path) -> dict:
         "main_call_count": main_call_count,
         "aux_count": aux_count,
         "started_at": started_at,
-        "preview": last_user_message,
+        "preview": latest_user_message,
     }
 
 
@@ -139,25 +143,32 @@ def session_detail(sid: str) -> Optional[dict]:
     sdir = State.trace_dir / "sessions" / sid
     if not sdir.is_dir():
         return None
+    # 排序统一规则：最近的在最上面。turn 目录名形如 ``turn-0001-YYYYMMDD-HHMMSS``、
+    # call 目录名形如 ``call-<unix_ms>-<hex>-<kind>``，字典序倒序即时间倒序。
     turns = []
-    for t in sorted(
-        [d for d in sdir.iterdir() if d.is_dir() and d.name.startswith("turn-")]
-    ):
+    turn_dirs = sorted(
+        [d for d in sdir.iterdir() if d.is_dir() and d.name.startswith("turn-")],
+        reverse=True,
+    )
+    for t in turn_dirs:
+        call_dirs = sorted(
+            [c for c in t.iterdir() if c.is_dir() and c.name.startswith("call-")],
+            reverse=True,
+        )
         turns.append({
             "id": t.name,
             "meta": _read_json(t / "_turn.json"),
-            "calls": [
-                _summarize_call(c)
-                for c in sorted(t.iterdir())
-                if c.is_dir() and c.name.startswith("call-")
-            ],
+            "calls": [_summarize_call(c) for c in call_dirs],
         })
     aux_calls = []
     auxd = sdir / "aux"
     if auxd.is_dir():
-        for c in sorted(auxd.iterdir()):
-            if c.is_dir() and c.name.startswith("call-"):
-                aux_calls.append(_summarize_call(c))
+        aux_dirs = sorted(
+            [c for c in auxd.iterdir() if c.is_dir() and c.name.startswith("call-")],
+            reverse=True,
+        )
+        for c in aux_dirs:
+            aux_calls.append(_summarize_call(c))
     return {"id": sid, "turns": turns, "aux_calls": aux_calls}
 
 
